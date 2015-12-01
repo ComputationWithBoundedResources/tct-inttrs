@@ -1,0 +1,66 @@
+name:          tct-inttrs
+version:       0.1.0.0
+stability:     experimental
+author:
+  Georg Moser, Michael Schaper
+maintainer:
+  Michael Schaper <michael.schaper@uibk.ac.at>,
+license:       BSD3
+license-file:  LICENSE
+category:      Program Analysis
+synopsis:      A Complexity Framework for Term Rewrite Systems
+description:
+  The Tyrolean Complexity Tool (TcT for short) is a tool for proving
+  resource bounds for different formal systems. This package provides
+  techniques for proving upper bounds on the derivational and runtime
+  complexity of int-term rewriting systems automatically.
+build-type:    Simple
+cabal-version: >= 1.8
+
+source-repository head
+  type:     git
+  location: git://github.com/ComputationWithBoundedResources/tct-inttrs
+
+library
+  hs-source-dirs:
+    src
+  exposed-modules:
+    Tct.IntTrs
+  build-depends:
+    base               == 4.*,
+    containers         >= 0.5 && < 0.6,
+    mtl                >= 2.1 && <= 2.3,
+    parsec             == 3.1.*,
+    bytestring,
+
+    term-rewriting     == 0.*,
+
+    slogic             == 0.*,
+    tct-core           == 3.1.*,
+
+    tct-trs            == 3.1.*,
+    tct-its            == 3.1.*,
+    tct-common         == 3.1.*,
+    term-rewriting-xml,
+    term-rewriting-xml,
+    filepath,
+    temporary,
+    array,
+    process
+
+  ghc-options:
+    -Wall -fno-warn-orphans -fno-spec-constr-count -rtsopts -with-rtsopts=-N
+  extensions:
+    ConstraintKinds,
+    DataKinds,
+    DeriveDataTypeable,
+    DeriveFoldable,
+    DeriveFunctor,
+    DeriveTraversable,
+    FlexibleContexts,
+    FlexibleInstances,
+    GADTs,
+    GeneralizedNewtypeDeriving,
+    MultiParamTypeClasses,
+    TypeFamilies,
+    TypeOperators
