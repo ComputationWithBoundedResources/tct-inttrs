@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {- | Provides a representation for (top-level) integer term rewrite systems.
 
 See <http://aprove.informatik.rwth-aachen.de/help_new/inttrs.html> for details.
@@ -22,38 +20,45 @@ Assumption:
   * system is well-typed wrt. to @Univ@ and @Nat@ type
   * arithmetic expressions not on top position
 
-Open:
+Open Questions:
   * how to specify starting location? dependency-analysis? currently minimal sybmbol
 -}
 module Tct.IntTrs where
 
 
-import qualified Data.Map.Strict          as M
-import           Data.Maybe               (fromJust, fromMaybe)
-import qualified Data.Set                 as S
+import qualified Data.Map.Strict              as M
+import           Data.Maybe                   (fromJust, fromMaybe)
+import qualified Data.Set                     as S
 
 import           Control.Monad.Except
 import           Control.Monad.RWS.Strict
-import           Tct.Core.Common.Parser   ((<|>))
-import qualified Tct.Core.Common.Parser   as PS
--- import qualified Tct.Core.Common.Pretty as PP
+import           Tct.Core
+import           Tct.Core.Common.Parser       ((<|>))
+import qualified Tct.Core.Common.Parser       as PS
+import           Tct.Core.Common.Pretty       (Doc, Pretty, pretty)
+import qualified Tct.Core.Common.Pretty       as PP
+import           Tct.Core.Common.Xml          (Xml, XmlContent, toXml)
+import qualified Tct.Core.Common.Xml          as Xml
+import qualified Tct.Core.Data                as T
+import           Tct.Core.Processor.Transform (transform)
 
-import qualified Text.Parsec.Expr         as PE
+import qualified Text.Parsec.Expr             as PE
 
-import qualified Data.Rewriting.Problem   as R
-import qualified Data.Rewriting.Rule      as R
-import qualified Data.Rewriting.Rules     as RS
-import qualified Data.Rewriting.Term      as T
+import qualified Data.Rewriting.Problem       as R
+import qualified Data.Rewriting.Rule          as R
+import qualified Data.Rewriting.Rules         as RS
+import qualified Data.Rewriting.Term          as T
 
-import           Tct.Its                  (Its)
-import qualified Tct.Its.Data.Problem     as Its (initialise)
-import           Tct.Trs                  (Trs)
-import qualified Tct.Trs.Data.Problem     as Trs (fromRewriting)
+import           Tct.Its                      (Its)
+import qualified Tct.Its.Data.Problem         as Its (initialise)
+import           Tct.Trs                      (Trs)
+import qualified Tct.Trs                      as Trs (runtime)
+import qualified Tct.Trs.Data.Problem         as Trs (fromRewriting)
 
 
 data IFun           = Add | Mul | Sub | Nat Int               deriving (Eq, Ord, Show)
 type ITerm f v      = T.Term IFun v
-data CFun           = Lte | Lt | Eq | Gt | Gte                deriving (Eq, Ord, Show, Enum, Bounded)
+data CFun           = Lte | Gte | Lt | Eq | Gt                deriving (Eq, Ord, Show, Enum, Bounded)
 data Constraint f v = Constraint (ITerm f v) CFun (ITerm f v) deriving (Eq, Ord, Show)
 
 data Fun f     = UFun f | IFun IFun deriving (Eq, Ord, Show)
@@ -112,7 +117,7 @@ comma = PS.symbol ","
 
 pTerm :: Parser (T.Term (Fun String) String)
 pTerm =
-  PS.try $ T.Fun <$> (UFun <$> PS.identifier) <*> PS.parens (pTerm `PS.sepBy` comma)
+  PS.try (T.Fun <$> (UFun <$> PS.identifier) <*> PS.parens (pTerm `PS.sepBy` comma))
   <|> T.map IFun id <$> pITerm
 
 pITerm :: Parser (ITerm String String)
@@ -133,7 +138,7 @@ pConstraint :: Parser (Constraint String String)
 pConstraint = Constraint <$> pITerm <*> pCFun <*> pITerm
 
 pConstraints :: Parser [Constraint String String]
-pConstraints = brackets $ pConstraint `PS.sepBy1` PS.symbol "&&"
+pConstraints = PS.option [] (brackets $ pConstraint `PS.sepBy1` PS.symbol "&&")
   where brackets p = PS.symbol "[" *> p <* PS.symbol "]"
 
 pRule :: Parser (Rule String String)
@@ -141,11 +146,10 @@ pRule = Rule <$> k <*> pConstraints
   where k = R.Rule <$> (pTerm <* PS.symbol "->") <*> pTerm
 
 pRules :: Parser (Rules String String)
-pRules = PS.many pRule
+pRules = PS.many1 pRule
 
 pNat :: Parser (ITerm String String)
 pNat = int <$> PS.nat
-
 
 --- * type inference -------------------------------------------------------------------------------------------------
 
@@ -173,6 +177,7 @@ data Type = Univ | Num | Alpha Int
 data TypeDecl = TypeDecl
   { inputTypes :: [Type]
   , outputType :: Type }
+  deriving Show
 
 type Typing f = M.Map (Fun f) TypeDecl
 
@@ -200,22 +205,23 @@ typeFun (IFun _) = Num
 -- MS: (almost) standard type inference
 -- we already know the type output type of function symbols, and the type of variables in arithmetic expressions
 -- still we have to type the rest of the variables
-infer :: (Ord f, Ord v) => Rules f v -> Either String (Typing f)
+infer :: (Show v, Show f, Ord f, Ord v) => Rules f v -> Either String (Typing f)
 infer rs = do
   (decs,_,up) <- runExcept $ runRWST (runInferM inferM) (Environment M.empty M.empty) 0
   subst       <- unify up
   return $ instDecl subst `fmap` decs
   where
 
-    lookupEnv v  = asks variables_    >>= maybe (throwError "undefined var") return . M.lookup v
-    lookupDecl f = asks declarations_ >>= maybe (throwError "undefined fun") return . M.lookup f
+    lookupEnv v  = asks variables_    >>= maybe (throwError $ "undefined var: " ++ show v) return . M.lookup v
+    lookupDecl f = asks declarations_ >>= maybe (throwError $ "undefined fun: " ++ show f) return . M.lookup f
 
     fresh = do { i <- get; put $! i + 1; return $ Alpha i}
 
     inferM = do
-      decls <- M.traverseWithKey initDecl (signature rs)
-      forM_ rs typeRule
-      return decls
+      tdecls <- M.traverseWithKey initDecl (signature rs)
+      local (\e -> e {declarations_ = tdecls}) $ do
+        forM_ rs typeRule
+        return tdecls
 
     instDecl subst (TypeDecl its ot) = TypeDecl [apply subst t | t <- its] (apply subst ot)
 
@@ -248,7 +254,7 @@ infer rs = do
       (Num, Univ)  -> throwError "type inference error"
       _ | t1 == t2 -> unify ts
       _            -> compose s `fmap` unify [(s `apply` t3,s `apply` t4) | (t3,t4) <- ts]
-        where s = if t1 < t2 then M.insert t1 t2 M.empty else M.insert t2 t1 M.empty -- MS: we want to replace alphas if possible
+        where s = if t1 > t2 then M.insert t1 t2 M.empty else M.insert t2 t1 M.empty -- MS: we want to replace alphas if possible
 
 
 --- * transformations ------------------------------------------------------------------------------------------------
@@ -258,16 +264,16 @@ toTrs' tys rs = Trs.fromRewriting =<< toRewriting' tys rs
 
 toRewriting' :: Ord f => Typing f -> Rules f v -> Either String (R.Problem f v)
 toRewriting' tys rs = case filterUniv tys rs of
-  Left s      -> Left s
-  Right rules -> Right R.Problem
+  Left s    -> Left s
+  Right trs -> Right R.Problem
     { R.startTerms = R.BasicTerms
     , R.strategy   = R.Innermost
     , R.theory     = Nothing
     , R.rules      = R.RulesPair
       { R.weakRules   = []
-      , R.strictRules = rules }
-    , R.variables  = RS.vars rules
-    , R.symbols    = RS.funs rules
+      , R.strictRules = trs }
+    , R.variables  = RS.vars trs
+    , R.symbols    = RS.funs trs
     , R.comment    = Just "intTrs2Trs"}
 
 filterUniv :: Ord f => Typing f -> Rules f v -> Either String [R.Rule f v]
@@ -331,5 +337,85 @@ filterNum tys = traverse filterRule
       where p t = case t of {(T.Fun (UFun _) _) -> False; _ -> True}
 
 
---- * pretty printer -------------------------------------------------------------------------------------------------
+
+
+--- * TcT integration ------------------------------------------------------------------------------------------------
+--- ** Problem -------------------------------------------------------------------------------------------------------
+-- MS: integration with TcT
+
+data Problem f v = Problem { rules :: Rules f v } deriving Show
+
+ppRules :: (f -> Doc) -> (v -> Doc) -> Rules f v -> Doc
+ppRules fun var rs = PP.vcat (ppRule fun var `fmap` rs)
+
+ppRule :: (f -> Doc) -> (v -> Doc) -> Rule f v -> Doc
+ppRule fun var (Rule (R.Rule lhs rhs) cs) =
+  PP.hang 2 $ ppTerm fun var lhs PP.<+> PP.string "->" PP.</> ppTerm fun var rhs PP.<+> ppConstraints var cs
+
+ppTerm :: (f -> Doc) -> (v -> Doc) -> Term f v -> Doc
+ppTerm fun var (T.Fun (UFun f) ts) = fun f <> PP.tupled (ppTerm fun var `fmap` ts)
+ppTerm fun var (T.Fun (IFun f) ts) = case f of
+  Nat i -> PP.int i
+  op    -> k op
+  where k op = PP.encloseSep PP.lparen PP.rparen (PP.space <> PP.text (iRep op) <> PP.space) (ppTerm fun var `fmap` ts)
+ppTerm _   var (T.Var v)           = var v
+
+ppConstraints :: (v -> Doc) -> [Constraint f v] -> Doc
+ppConstraints var cs = PP.encloseSep PP.lbracket PP.rbracket (PP.text " && ") (ppConstraint var `fmap` cs)
+
+ppConstraint :: (v -> Doc) -> Constraint f v -> Doc
+ppConstraint var (Constraint lhs eq rhs) = ppITerm lhs PP.<+> PP.text (cRep eq) PP.<+> ppITerm rhs
+  where
+    k op ts = PP.encloseSep PP.lparen PP.rparen (PP.space <> PP.text (iRep op) <> PP.space) (ppITerm `fmap` ts)
+    ppITerm (T.Fun f ts) = case f of
+      Nat i -> PP.int i
+      op    -> k op ts
+    ppITerm (T.Var v)           = var v
+
+xmlRules :: (f -> XmlContent) -> (v -> XmlContent) -> Rules f v -> XmlContent
+xmlRules _ _ _ = Xml.empty
+
+instance (Pretty f, Pretty v) =>  Pretty (Problem f v) where
+  pretty (Problem rs) = PP.text "Rules" PP.<$$> PP.indent 2 (ppRules PP.pretty PP.pretty rs)
+
+instance (Xml f, Xml v) =>  Xml (Problem f v) where
+  toXml (Problem rs) = Xml.elt "inttrs" [ Xml.elt "rules" [xmlRules toXml toXml rs] ]
+
+instance {-# OVERLAPPING #-} Xml (Problem String String) where
+  toXml (Problem rs) = Xml.elt "inttrs" [ Xml.elt "rules" [xmlRules Xml.text Xml.text rs] ]
+
+
+--- ** Config --------------------------------------------------------------------------------------------------------
+
+type IntTrs       = Problem String String
+type IntTrsConfig = TctConfig IntTrs
+
+parse :: String -> Either String IntTrs
+parse s = case PS.parse pRules "" s of
+  Left e  -> Left (show e)
+  Right p -> Right (Problem p)
+
+parseIO :: FilePath -> IO (Either String IntTrs)
+parseIO fn = parse <$> readFile fn
+
+intTrsConfig :: IntTrsConfig
+intTrsConfig = defaultTctConfig parseIO
+
+runIntTrs :: Declared IntTrs IntTrs => IntTrsConfig -> IO ()
+runIntTrs = runTct
+
+toTrs :: Strategy IntTrs Trs
+toTrs = transform "We extract a TRS fragment from the current int-TRS problem:"
+  (\p -> infer (rules p) >>= \tp -> toTrs' tp (rules p))
+
+withTrs :: Strategy Trs Trs -> Strategy IntTrs Trs
+withTrs st = toTrs .>>> st
+
+-- TODO: MS: move to tct-trs
+trsArg :: Declared Trs Trs => T.Argument 'T.Required (Strategy Trs Trs)
+trsArg = T.strat "trs" ["This argument specifies the trs strategy to apply."]
+
+intTrsDeclarations :: Declared Trs Trs => [StrategyDeclaration IntTrs IntTrs]
+intTrsDeclarations =
+  [ T.SD $ T.declare "withTrs" ["Solve with TRS."] (OneTuple $ trsArg `optional` Trs.runtime) $ \st -> withTrs st .>>> close ]
 

@@ -21,6 +21,51 @@ source-repository head
   type:     git
   location: git://github.com/ComputationWithBoundedResources/tct-inttrs
 
+
+executable tct-inttrs
+  main-is:
+    Main.hs
+  hs-source-dirs:
+    tct-inttrs
+  build-depends:
+    array              == 0.5.*,
+    bytestring         >= 0.10.4 && < 0.10.7,
+    containers         >= 0.5 && < 0.6,
+    fgl                == 5.5.*,
+    filepath           >= 1.3,
+    mtl                >= 2.1 && <= 2.3,
+    base               == 4.*,
+    process            >= 1.1,
+    temporary          == 1.2.0.*,
+
+    term-rewriting     == 0.*,
+    term-rewriting-xml == 0.1.0.*,
+
+    slogic             == 0.*,
+    tct-common         == 3.1.*,
+    tct-core           == 3.1.*,
+    tct-trs            == 3.1.*,
+
+    tct-inttrs
+
+  extensions:
+    ConstraintKinds,
+    DataKinds,
+    DeriveDataTypeable,
+    DeriveFoldable,
+    DeriveFunctor,
+    DeriveTraversable,
+    GeneralizedNewtypeDeriving,
+    FlexibleContexts,
+    FlexibleInstances,
+    GADTs,
+    MultiParamTypeClasses,
+    TypeFamilies,
+    TypeOperators
+
+  ghc-options:
+    -Wall -threaded -fno-warn-orphans -fno-spec-constr-count -rtsopts -with-rtsopts=-N
+
 library
   hs-source-dirs:
     src

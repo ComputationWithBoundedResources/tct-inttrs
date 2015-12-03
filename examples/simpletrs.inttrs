@@ -1,0 +1,1 @@
+cons(0,cons(y,ys)) -> ys [ y >= 0 ]
