@@ -19,22 +19,21 @@ Assumption:
   * no negation, numbers are parsed as naturals (machine-dependent @Int@)
   * system is well-typed wrt. to @Univ@ and @Nat@ type
   * arithmetic expressions not on top position
-
-Open Questions:
-  * how to specify starting location? dependency-analysis? currently minimal sybmbol
+  * there is a unique start location, ie., exists ONE rule with unique function symbol on lhs
 -}
 module Tct.IntTrs where
 
 
+import           Control.Applicative          ((<|>))
+import           Control.Monad.Except
+import           Control.Monad.RWS.Strict
 import qualified Data.Map.Strict              as M
 import           Data.Maybe                   (fromJust, fromMaybe)
 import qualified Data.Set                     as S
 
-import           Control.Monad.Except
-import           Control.Monad.RWS.Strict
+import qualified Tct.Common.Polynomial        as P
+import qualified Tct.Common.Ring              as R
 import           Tct.Core
-import           Tct.Core.Common.Parser       ((<|>))
-import qualified Tct.Core.Common.Parser       as PS
 import           Tct.Core.Common.Pretty       (Doc, Pretty, pretty)
 import qualified Tct.Core.Common.Pretty       as PP
 import           Tct.Core.Common.Xml          (Xml, XmlContent, toXml)
@@ -42,15 +41,21 @@ import qualified Tct.Core.Common.Xml          as Xml
 import qualified Tct.Core.Data                as T
 import           Tct.Core.Processor.Transform (transform)
 
+import qualified Text.Parsec                  as PS
 import qualified Text.Parsec.Expr             as PE
+import qualified Text.Parsec.Language         as PL
+import qualified Text.Parsec.Token            as PT
 
 import qualified Data.Rewriting.Problem       as R
 import qualified Data.Rewriting.Rule          as R
 import qualified Data.Rewriting.Rules         as RS
 import qualified Data.Rewriting.Term          as T
 
+-- TODO: MS: better export list for Its
 import           Tct.Its                      (Its)
 import qualified Tct.Its.Data.Problem         as Its (initialise)
+import qualified Tct.Its.Data.Types           as Its (AAtom (..), ARule (..), ATerm (..))
+import qualified Tct.Its.Strategies           as Its (runtime)
 import           Tct.Trs                      (Trs)
 import qualified Tct.Trs                      as Trs (runtime)
 import qualified Tct.Trs.Data.Problem         as Trs (fromRewriting)
@@ -58,7 +63,7 @@ import qualified Tct.Trs.Data.Problem         as Trs (fromRewriting)
 
 data IFun           = Add | Mul | Sub | Nat Int               deriving (Eq, Ord, Show)
 type ITerm f v      = T.Term IFun v
-data CFun           = Lte | Gte | Lt | Eq | Gt                deriving (Eq, Ord, Show, Enum, Bounded)
+data CFun           = Lte | Lt | Eq | Gt | Gte                 deriving (Eq, Ord, Show, Enum, Bounded)
 data Constraint f v = Constraint (ITerm f v) CFun (ITerm f v) deriving (Eq, Ord, Show)
 
 data Fun f     = UFun f | IFun IFun deriving (Eq, Ord, Show)
@@ -77,14 +82,23 @@ vars :: Ord v => Rule f v -> [v]
 vars (Rule (R.Rule lhs rhs) cs) = S.toList $ S.fromList $ (T.varsDL lhs <> T.varsDL rhs <> cvarsDL cs) []
   where cvarsDL = foldr (mappend . k) id where k (Constraint t1 _ t2) = T.varsDL t1 <> T.varsDL t2
 
+varsL :: Ord v => Rule f v -> [v]
+varsL (Rule (R.Rule lhs rhs) cs) = (T.varsDL lhs <> T.varsDL rhs <> cvarsDL cs) []
+  where cvarsDL = foldr (mappend . k) id where k (Constraint t1 _ t2) = T.varsDL t1 <> T.varsDL t2
+
+termToITerm :: ErrorM m => Term f v -> m (ITerm f v)
+termToITerm (T.Fun (UFun _) _)  = throwError "termToIterm: not an iterm"
+termToITerm (T.Fun (IFun f) ts) = T.Fun f <$> traverse termToITerm ts
+termToITerm (T.Var v)           = pure (T.Var v)
+
 type Rules f v = [Rule f v]
 
 iop :: f -> T.Term f v -> T.Term f v -> T.Term f v
 iop f x y = T.Fun f [x,y]
 
 add, mul, sub :: T.Term IFun v -> T.Term IFun v -> T.Term IFun v
-add = iop Mul
-mul = iop Add
+add = iop Add
+mul = iop Mul
 sub = iop Sub
 
 int :: Int -> ITerm f v
@@ -103,53 +117,79 @@ cRep Eq  = "="
 cRep Gt  = ">"
 cRep Gte = ">="
 
+type ErrorM = MonadError String
+
 
 --- * parser ---------------------------------------------------------------------------------------------------------
+
+tok :: PT.TokenParser st
+tok = PT.makeTokenParser
+  PL.emptyDef
+    { PT.commentStart    = "(*)"
+    , PT.commentEnd      = "*)"
+    , PT.nestedComments  = False
+    , PT.identStart      = PS.letter
+    , PT.identLetter     = PS.alphaNum <|> PS.oneOf "_'"
+    , PT.reservedOpNames = cRep `fmap` [(minBound :: CFun)..]
+    , PT.reservedNames   = []
+    , PT.caseSensitive   = True }
+
+pIdentifier, pComma :: Parser String
+pIdentifier = PT.identifier tok
+pComma      = PT.comma tok
+
+pSymbol :: String -> Parser String
+pSymbol = PT.symbol tok
+
+pParens :: Parser a -> Parser a
+pParens = PT.parens tok
+
+pReserved, pReservedOp :: String -> Parser ()
+pReserved   = PT.reserved tok
+pReservedOp = PT.reservedOp tok
+
+pNat :: Parser Int
+pNat = fromIntegral <$> PT.natural tok
 
 type Parser = PS.Parsec String ()
 -- type Parser = PS.ParsecT Text () Identity
 
 pVar :: Parser (T.Term f String)
-pVar =  T.Var `fmap` PS.identifier
-
-comma :: Parser String
-comma = PS.symbol ","
+pVar =  T.Var `fmap` pIdentifier
 
 pTerm :: Parser (T.Term (Fun String) String)
 pTerm =
-  PS.try (T.Fun <$> (UFun <$> PS.identifier) <*> PS.parens (pTerm `PS.sepBy` comma))
+  PS.try (T.Fun <$> (UFun <$> pIdentifier) <*> pParens (pTerm `PS.sepBy` pComma))
   <|> T.map IFun id <$> pITerm
 
 pITerm :: Parser (ITerm String String)
-pITerm = PE.buildExpressionParser table (PS.parens pITerm <|> pNat <|> pVar)
+pITerm = PE.buildExpressionParser table (pParens pITerm <|> (int <$> pNat) <|> pVar)
   where
     table =
       -- [ [ unary "-" neg ]
       [ [ binaryL (iRep Mul) mul PE.AssocLeft]
       , [ binaryL (iRep Add) add PE.AssocLeft, binaryL (iRep Sub) sub PE.AssocLeft] ]
     -- unary f op   = PE.Prefix (PS.reserved f *> return op)
-    binaryL f op = PE.Infix (PS.reserved f *> return op)
+    binaryL f op = PE.Infix (pSymbol f *> return op)
 
 pCFun :: Parser CFun
 pCFun = PS.choice $ k  `fmap` [(minBound :: CFun)..]
-  where k c = PS.try (PS.symbol (cRep c)) *> return c
+  where k c = PS.try (pReservedOp $ cRep c) *> return c
 
 pConstraint :: Parser (Constraint String String)
 pConstraint = Constraint <$> pITerm <*> pCFun <*> pITerm
 
 pConstraints :: Parser [Constraint String String]
-pConstraints = PS.option [] (brackets $ pConstraint `PS.sepBy1` PS.symbol "&&")
-  where brackets p = PS.symbol "[" *> p <* PS.symbol "]"
+pConstraints = PS.option [] (brackets $ pConstraint `PS.sepBy1` pSymbol "&&")
+  where brackets p = pSymbol "[" *> p <* pSymbol "]"
 
 pRule :: Parser (Rule String String)
 pRule = Rule <$> k <*> pConstraints
-  where k = R.Rule <$> (pTerm <* PS.symbol "->") <*> pTerm
+  where k = R.Rule <$> (pTerm <* pSymbol "->") <*> pTerm
 
 pRules :: Parser (Rules String String)
 pRules = PS.many1 pRule
 
-pNat :: Parser (ITerm String String)
-pNat = int <$> PS.nat
 
 --- * type inference -------------------------------------------------------------------------------------------------
 
@@ -158,6 +198,10 @@ type Signature f = M.Map (Fun f) Int
 signature :: Ord f => Rules f v -> Signature f
 signature = M.fromList . RS.funs . fmap (rmap T.withArity . rule)
   where rmap k (R.Rule lhs rhs) = R.Rule (k lhs) (k rhs)
+
+fsignature :: Ord f => Rules f v -> Signature f
+fsignature = M.filterWithKey (\k _ -> isUTerm k) . signature
+  where isUTerm f = case f of {(UFun _) -> True; _ -> False}
 
 -- | @vars r = (univvars, numvars)@. Variables in constraints and arithmetic expressions are @numvars@, all other wars
 -- are @univvars@.
@@ -291,35 +335,85 @@ filterUniv tys = traverse (filterRule . rule)
       (M.lookup f tys)
 
 
-toIts' :: Typing String -> Rules String String -> Either String Its
-toIts' tys rs = (asItsRules . padRules . renameRules . filter rhsIsNotVar) `fmap` filterNum tys rs
+-- MS: assumes top-level rewriting; lhs and rhs is following form
+-- f(aexp1,...,aexp2) -> g(aexp1,...,aexp2)
+toIts' :: ErrorM m => Typing String -> Rules String String -> m Its
+toIts' tys rs = do
+  l0 <- findStart rs
+  rs' <- filterNum tys rs
+  asItsRules l0 . padRules . renameRules $ filter (not . rhsIsVar) rs'
   where
-    rhsIsNotVar = not . T.isVar . R.rhs . rule
+    rhsIsVar = T.isVar . R.rhs . rule
 
-    padRules rls = padRule (mx rls) `fmap` rls
-      where mx = maximum . M.elems . signature
-    padRule mx (Rule (R.Rule lhs rhs) cs) = Rule (R.Rule (padTerm mx lhs) (padTerm mx rhs)) cs
-    padTerm mx (T.Fun (UFun f) ts) = T.Fun (UFun f) $ zip' ts (take mx fresh)
-    padTerm _ _                    = error "a"
-    zip' (t:ts) (_:ss) = t: zip' ts ss
-    zip' ts (s:ss)     = T.Var s: zip' ts ss
-    zip' _ _           = []
+    asItsRules l0 rls = toItsRules rls >>= \rls' -> return $ Its.initialise ([l0],[],rls')
 
-    renameRules rls = renameRule `fmap` rls
-    renameRule r    = rename (find $ zip (vars r) fresh) r
+renameRules :: Rules f String -> Rules f String
+renameRules = fmap renameRule
 
-    fresh  = (mappend "x" . show) `fmap` [(0::Int)..]
-    find as k = fromJust $ lookup k as
+renameRule :: Rule f String -> Rule f String
+renameRule r = rename mapping r
+  where
+    mapping v = fromJust . M.lookup v . fst $ foldl k (M.empty, freshvars) (varsL r)
+    k (m,i) v = if M.member v m then (m,i) else (M.insert v (head i) m, tail i)
 
-    -- MS: TODO: how to specify starting location?
-    UFun l0 = minimum $ foldr T.funsDL [] $ RS.lhss $ rule `fmap` rs
+freshvars :: [String]
+freshvars  = (mappend "x" . show) `fmap` [(0::Int)..]
 
-    asItsRules rls = Its.initialise ([l0],[],asItsRule `fmap` rls)
-    asItsRule (Rule (R.Rule lhs rhs) cs) = undefined -- Rule lhs' rhs' cs'
+padRules :: Ord f => Rules f String -> Rules f String
+padRules rls = padRule (mx rls) `fmap` rls
+  where mx = maximum . M.elems . fsignature
+
+padRule :: Int -> Rule f String -> Rule f String
+padRule mx (Rule (R.Rule lhs rhs) cs) = Rule (R.Rule (padTerm mx lhs) (padTerm mx rhs)) cs
+
+padTerm :: Int -> Term f String -> Term f String
+padTerm mx (T.Fun (UFun f) ts) = T.Fun (UFun f) $ zip' ts (take mx freshvars)
+  where
+    zip' (s:ss) (_:rr) = s: zip' ss rr
+    zip' []     rr     = T.Var `fmap` rr
+    zip' _     []      = error "a"
+padTerm _ _                    = error "a"
+
+toItsRules :: (Ord v, ErrorM m) => Rules f v -> m [Its.ARule f v]
+toItsRules = traverse toItsRule
+
+toItsRule :: (Ord v, ErrorM m) => Rule f v -> m (Its.ARule f v)
+toItsRule (Rule (R.Rule lhs rhs) cs) = Its.Rule <$> toItsTerm lhs <*> ((:[]) <$> toItsTerm rhs) <*> traverse toItsConstraint cs
+
+toItsTerm :: (Ord v, ErrorM m) => Term f v -> m (Its.ATerm f v)
+toItsTerm (T.Fun (UFun f) ts) = Its.Term f <$> traverse (termToITerm >=> itermToPoly) ts
+toItsTerm _                   = throwError "toItsTerm: not a valid term"
+
+itermToPoly :: (Ord v, ErrorM m) => ITerm f v -> m (P.Polynomial Int v)
+itermToPoly (T.Fun (Nat n) [])       = pure $ P.constant n
+itermToPoly (T.Fun f ts@(t1:t2:tss)) = case f of
+  Add   -> R.bigAdd <$> traverse itermToPoly ts
+  Mul   -> R.bigMul <$> traverse itermToPoly ts
+  Sub   -> R.sub <$> itermToPoly t1 <*> (R.bigAdd `fmap` traverse itermToPoly (t2:tss))
+  _     -> throwError "itermToPoly: not a valid term"
+itermToPoly (T.Var v) = pure $ P.variable v
+itermToPoly _ = throwError "itermToPoly: not a valid term"
+
+toItsConstraint :: (Ord v, ErrorM m) => Constraint f v -> m (Its.AAtom v)
+toItsConstraint (Constraint t1 cop t2) = case cop of
+  Lte -> Its.Gte <$> itermToPoly t2 <*> itermToPoly t1
+  Lt  -> Its.Gte <$> itermToPoly t2 <*> (R.add R.one <$> itermToPoly t1)
+  Eq  -> Its.Eq  <$> itermToPoly t1 <*> itermToPoly t2
+  Gt  -> Its.Gte <$> itermToPoly t1 <*> (R.add R.one <$> itermToPoly t2)
+  Gte -> Its.Gte <$> itermToPoly t1 <*> itermToPoly t2
+
+-- | Look for a single unique function symbol on the rhs.
+findStart :: (ErrorM m, Ord f) => Rules f v -> m f
+findStart rs = case S.toList $ roots R.lhs  `S.difference` roots R.rhs of
+  [fun] -> pure fun
+  _     -> throwError "Could not deduce a start symbol."
+  where
+    roots f            = foldr (k f) S.empty rs
+    k f (Rule r _) acc = case f r of {T.Fun (UFun g) _ -> g `S.insert` acc; _ -> acc}
 
 -- | Restricts to 'Num' type
--- If successfull, 'UFun' appear at only at root positions, and 'IFun' appear only below root.
-filterNum :: Ord f => Typing f -> Rules f v -> Either String (Rules f v)
+-- If successfull, 'UFun' appears only at root positions, and 'IFun' appear only below root.
+filterNum :: (ErrorM m, Ord f) => Typing f -> Rules f v -> m (Rules f v)
 filterNum tys = traverse filterRule
   where
     filterRule (Rule (R.Rule lhs rhs) cs) = Rule <$> (R.Rule <$> filterRoot lhs <*> filterRoot rhs) <*> pure cs
@@ -335,8 +429,6 @@ filterNum tys = traverse filterRule
 
     validate ts = if all p ts then pure ts else throwError "filterNum: type inference error"
       where p t = case t of {(T.Fun (UFun _) _) -> False; _ -> True}
-
-
 
 
 --- * TcT integration ------------------------------------------------------------------------------------------------
@@ -411,11 +503,36 @@ toTrs = transform "We extract a TRS fragment from the current int-TRS problem:"
 withTrs :: Strategy Trs Trs -> Strategy IntTrs Trs
 withTrs st = toTrs .>>> st
 
+toIts :: Strategy IntTrs Its
+toIts = transform "We extract a Its fragment from the current int-TRS problem:"
+  (\p -> infer (rules p) >>= \tp -> toIts' tp (rules p))
+  -- (\p -> infer (rules p) >>= \tp -> toIts' tp (rules p) >>= \its' -> trace (PP.display $ PP.pretty p) (trace (PP.display $ PP.pretty its') (return its')))
+
+withIts :: Strategy Its Its -> Strategy IntTrs Its
+withIts st = toIts .>>> st
+
+withBoth :: Strategy Trs Trs -> Strategy Its Its -> Strategy IntTrs ()
+withBoth st1 st2 = withProblem $ \p -> let tpM = infer (rules p) in fastest
+  [ transform "a" (const $ tpM >>= \tp -> toTrs' tp (rules p)) .>>> st1 .>>> close
+  , transform "a" (const $ tpM >>= \tp -> toIts' tp (rules p)) .>>> st2 .>>> close]
+
 -- TODO: MS: move to tct-trs
 trsArg :: Declared Trs Trs => T.Argument 'T.Required (Strategy Trs Trs)
 trsArg = T.strat "trs" ["This argument specifies the trs strategy to apply."]
 
-intTrsDeclarations :: Declared Trs Trs => [StrategyDeclaration IntTrs IntTrs]
+-- TODO: MS: move to tct-its
+itsArg :: Declared Its Its => T.Argument 'T.Required (Strategy Its Its)
+itsArg = T.strat "its" ["This argument specifies the trs strategy to apply."]
+
+intTrsDeclarations :: (Declared Trs Trs, Declared Its Its) => [StrategyDeclaration IntTrs IntTrs]
 intTrsDeclarations =
-  [ T.SD $ T.declare "withTrs" ["Solve with TRS."] (OneTuple $ trsArg `optional` Trs.runtime) $ \st -> withTrs st .>>> close ]
+  [ T.SD $ T.declare "withTrs" ["Solve with TRS."]
+      (OneTuple $ trsArg `optional` Trs.runtime)
+      (\st -> withTrs st .>>> close)
+  , T.SD $ T.declare "withIts" ["Solve with ITS."]
+      (OneTuple $ itsArg `optional` Its.runtime)
+      (\st -> withIts st .>>> close)
+  , T.SD $ T.declare "withBoth" ["Solve with TRS and ITS."]
+      (trsArg `optional` Trs.runtime, itsArg `optional` Its.runtime)
+      (\st1 st2 -> withBoth st1 st2 .>>> close) ]
 

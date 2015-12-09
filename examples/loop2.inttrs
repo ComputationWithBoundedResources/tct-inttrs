@@ -1,0 +1,2 @@
+l0(x,y,z) -> g(x,y,z)
+g(cons(x, xs), y,z)   -> g(xs, y * 1,z + 2) [ y > 0]

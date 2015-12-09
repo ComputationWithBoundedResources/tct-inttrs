@@ -1,0 +1,2 @@
+l0(x,y) -> h(x,y)
+h(xs, y)  -> h(cons(0, xs), y - 1) [y  > 0]

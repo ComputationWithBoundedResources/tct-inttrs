@@ -1,0 +1,4 @@
+l0(x,y) -> outer(x,y)
+outer(x, r) -> inner(1, 1, x, r) [ x >= 0 && r <= 10]
+inner(f, i, x, r) -> inner(f + i, i+1, x, r) [ i <= x ]
+inner(f, i, x, r) -> outer(x - 1, r + f) [ i > x ]

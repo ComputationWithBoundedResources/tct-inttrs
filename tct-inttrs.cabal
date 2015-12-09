@@ -45,6 +45,7 @@ executable tct-inttrs
     tct-common         == 3.1.*,
     tct-core           == 3.1.*,
     tct-trs            == 3.1.*,
+    tct-its            == 3.1.*,
 
     tct-inttrs
 
