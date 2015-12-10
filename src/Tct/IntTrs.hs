@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-unused-binds #-}
 {- | Provides a representation for (top-level) integer term rewrite systems.
 
 See <http://aprove.informatik.rwth-aachen.de/help_new/inttrs.html> for details.
@@ -21,7 +22,19 @@ Assumption:
   * arithmetic expressions not on top position
   * there is a unique start location, ie., exists ONE rule with unique function symbol on lhs
 -}
-module Tct.IntTrs where
+module Tct.IntTrs
+  (
+  -- * Transformation
+  toTrs' , toIts' , infer
+  , parseRules, parse, parseIO
+  , prettyPrintRules
+  , putTrs, putIts
+  -- * Tct Integration
+  , IntTrs, IntTrsConfig
+  , rules
+  , runIntTrs, intTrsConfig
+  , toTrs, toIts, withTrs, withIts, withBoth, intTrsDeclarations
+  ) where
 
 
 import           Control.Applicative          ((<|>))
@@ -30,6 +43,7 @@ import           Control.Monad.RWS.Strict
 import qualified Data.Map.Strict              as M
 import           Data.Maybe                   (fromJust, fromMaybe)
 import qualified Data.Set                     as S
+import           System.IO                    (hPutStrLn, stderr)
 
 import qualified Tct.Common.Polynomial        as P
 import qualified Tct.Common.Ring              as R
@@ -53,8 +67,8 @@ import qualified Data.Rewriting.Term          as T
 
 -- TODO: MS: better export list for Its
 import           Tct.Its                      (Its)
-import qualified Tct.Its.Data.Problem         as Its (initialise)
-import qualified Tct.Its.Data.Types           as Its (AAtom (..), ARule (..), ATerm (..))
+import qualified Tct.Its.Data.Problem         as Its (Its (..), initialise, domain)
+import qualified Tct.Its.Data.Types           as Its (AAtom (..), ARule (..), ATerm (..), rules)
 import qualified Tct.Its.Strategies           as Its (runtime)
 import           Tct.Trs                      (Trs)
 import qualified Tct.Trs                      as Trs (runtime)
@@ -78,9 +92,9 @@ rename :: (v -> v') -> Rule f v -> Rule f v'
 rename var (Rule rl cs) = Rule (R.rename var rl) (k `fmap` cs)
   where k (Constraint t1 op t2) = Constraint (T.rename var t1) op (T.rename var t2)
 
-vars :: Ord v => Rule f v -> [v]
-vars (Rule (R.Rule lhs rhs) cs) = S.toList $ S.fromList $ (T.varsDL lhs <> T.varsDL rhs <> cvarsDL cs) []
-  where cvarsDL = foldr (mappend . k) id where k (Constraint t1 _ t2) = T.varsDL t1 <> T.varsDL t2
+-- vars :: Ord v => Rule f v -> [v]
+-- vars (Rule (R.Rule lhs rhs) cs) = S.toList $ S.fromList $ (T.varsDL lhs <> T.varsDL rhs <> cvarsDL cs) []
+--   where cvarsDL = foldr (mappend . k) id where k (Constraint t1 _ t2) = T.varsDL t1 <> T.varsDL t2
 
 varsL :: Ord v => Rule f v -> [v]
 varsL (Rule (R.Rule lhs rhs) cs) = (T.varsDL lhs <> T.varsDL rhs <> cvarsDL cs) []
@@ -144,8 +158,7 @@ pSymbol = PT.symbol tok
 pParens :: Parser a -> Parser a
 pParens = PT.parens tok
 
-pReserved, pReservedOp :: String -> Parser ()
-pReserved   = PT.reserved tok
+pReservedOp :: String -> Parser ()
 pReservedOp = PT.reservedOp tok
 
 pNat :: Parser Int
@@ -189,6 +202,10 @@ pRule = Rule <$> k <*> pConstraints
 
 pRules :: Parser (Rules String String)
 pRules = PS.many1 pRule
+
+-- | Parser for intTrs rules
+parseRules :: Parser (Rules String String)
+parseRules = pRules
 
 
 --- * type inference -------------------------------------------------------------------------------------------------
@@ -241,10 +258,6 @@ newtype InferM f v a = InferM { runInferM :: RWST (Environment f v) Unify Int (E
 
 (=~) :: Type -> Type -> InferM f v ()
 a =~ b = tell [(a,b)]
-
-typeFun :: Fun f -> Type
-typeFun (UFun _) = Univ
-typeFun (IFun _) = Num
 
 -- MS: (almost) standard type inference
 -- we already know the type output type of function symbols, and the type of variables in arithmetic expressions
@@ -306,6 +319,13 @@ infer rs = do
 toTrs' :: Typing String -> Rules String String  -> Either String Trs
 toTrs' tys rs = Trs.fromRewriting =<< toRewriting' tys rs
 
+-- | Transforms the inttrs rules to a Trs. If successfull the problem is rendered to the standard output, otherwise
+-- the error is rendered to standard error.
+putTrs :: Rules String String -> IO ()
+putTrs rs = case infer rs >>= flip toRewriting' rs of
+  Left err  -> hPutStrLn stderr err
+  Right trs -> putStrLn $ PP.display $ R.prettyWST pretty pretty trs
+
 toRewriting' :: Ord f => Typing f -> Rules f v -> Either String (R.Problem f v)
 toRewriting' tys rs = case filterUniv tys rs of
   Left s    -> Left s
@@ -346,6 +366,30 @@ toIts' tys rs = do
     rhsIsVar = T.isVar . R.rhs . rule
 
     asItsRules l0 rls = toItsRules rls >>= \rls' -> return $ Its.initialise ([l0],[],rls')
+
+-- | Transforms the inttrs rules to a Its. If successfull the problem is rendered to the standard output, otherwise
+-- the error is rendered to standard error.
+putIts :: Rules String String -> IO ()
+putIts rs = case infer rs >>= flip toIts' rs of
+  Left err  -> hPutStrLn stderr err
+  Right its -> putStrLn $ PP.display $ ppKoat its
+
+-- TODO: MS: move to tct-its
+ppKoat :: Its -> Doc
+ppKoat its = PP.vcat
+  [ PP.text "(GOAL COMPLEXITY)"
+  , PP.text "(STARTTERM (FUNCTIONSYMBOL "<> PP.text (Its.fun $ Its.startterm_ its) <> PP.text "))"
+  , PP.text "(VAR " <> PP.hsep (PP.text `fmap` Its.domain its) <> PP.text ")"
+  , PP.text "(RULES "
+  , PP.indent 2 $ PP.vcat (pp `fmap` Its.rules (Its.irules_ its))
+  , PP.text ")" ]
+  where 
+    pp (Its.Rule lhs rhss cs) = 
+      PP.pretty lhs 
+        <> PP.text " -> " 
+        <> PP.text "Com_" <> PP.int (length rhss) <> PP.tupled' rhss 
+        <> if null cs then PP.empty else PP.encloseSep PP.lbracket PP.rbracket (PP.text " && ") (PP.pretty `fmap` cs)
+
 
 renameRules :: Rules f String -> Rules f String
 renameRules = fmap renameRule
@@ -439,6 +483,10 @@ data Problem f v = Problem { rules :: Rules f v } deriving Show
 
 ppRules :: (f -> Doc) -> (v -> Doc) -> Rules f v -> Doc
 ppRules fun var rs = PP.vcat (ppRule fun var `fmap` rs)
+
+-- | Pretty printer for a list of rules.
+prettyPrintRules :: (f -> Doc) -> (v -> Doc) -> Rules f v -> Doc
+prettyPrintRules = ppRules
 
 ppRule :: (f -> Doc) -> (v -> Doc) -> Rule f v -> Doc
 ppRule fun var (Rule (R.Rule lhs rhs) cs) =
