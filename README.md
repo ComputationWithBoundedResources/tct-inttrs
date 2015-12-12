@@ -2,8 +2,6 @@
 This package is part of the _Tyrolean Complexity Tool (TcT)_ and provides
 a presentation for (top-level) integer term rewrite systems.
 
-See [here](http://aprove.informatik.rwth-aachen.de/help_new/inttrs.html) for details.
-
 ###Example
 ```
   outer(x, r)       -> inner(1, 1, x, r)       [ x >= 0 && r <= 100000]
@@ -12,6 +10,7 @@ See [here](http://aprove.informatik.rwth-aachen.de/help_new/inttrs.html) for det
   g(cons(x, xs), y) -> g(xs, y + 1)
   h(xs, y)          -> h(cons(0, xs), y - 1)   [ y  > 0]
 ```
+See [here](http://aprove.informatik.rwth-aachen.de/help_new/inttrs.html) for details about the format.
 
 ##Requirements
 
@@ -22,7 +21,6 @@ Executables:
 
 Other packages
   * [slogic](https://github.com/ComputationWithBoundedResources/slogic/)
-  * [jat](https://github.com/ComputationWithBoundedResources/jat/)
   * [tct-core](https://github.com/ComputationWithBoundedResources/tct-core/)
   * [tct-common](https://github.com/ComputationWithBoundedResources/tct-common/)
   * [tct-its](https://github.com/ComputationWithBoundedResources/tct-trs/)

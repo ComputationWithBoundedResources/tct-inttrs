@@ -1,3 +1,4 @@
+
 flags: {}
 packages:
 - '.'
@@ -14,6 +15,14 @@ packages:
 - location:
     git: git@github.com:ComputationWithBoundedResources/tct-common
     commit: b88ce5394cb9a7dde6d3a08a0a15391991e36ed5
+
+- location:
+    git: git@github.com:ComputationWithBoundedResources/tct-trs
+    commit: a888652e9e3a12b595c29e6f0a5ddbbd25c1abfe
+- location:
+    git: git@github.com:ComputationWithBoundedResources/tct-its
+    commit: 11630e1d3a098280f51be9ec2d8aceb8bb30ec02
+
 extra-deps:
 - dotgen-0.4.2
 - fgl-visualize-0.1.0.1
