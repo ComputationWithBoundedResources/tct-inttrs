@@ -53,10 +53,10 @@ To directly invoke the resource analysis on the transformed problems use one of 
 # executes the default strategies on resulting TRS and ITS problem, returning the first successfull result
 tct-inttrs $problem
 # executes default trs strategy on resulting TRS problem
-tct-inttrs --strategy trs $problem
-# executes defualt its strategy on resulting ITS problem
-tct-inttrs --strategy its $problem 
+tct-inttrs --strategy withTrs $problem
+# executes default its strategy on resulting ITS problem
+tct-inttrs --strategy withIts $problem 
 # executes 'polys' strategy on resulting TRS problem
-tct-inttrs --strategy "trs :trs polys"
+tct-inttrs --strategy "withTrs :trs polys"
 ```
 
