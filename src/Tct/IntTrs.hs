@@ -311,6 +311,7 @@ infer rs = do
       (Num, Univ)  -> throwError "type inference error"
       _ | t1 == t2 -> unify ts
       _            -> compose s `fmap` unify [(s `apply` t3,s `apply` t4) | (t3,t4) <- ts]
+        --  TODO: make this more explicit
         where s = if t1 > t2 then M.insert t1 t2 M.empty else M.insert t2 t1 M.empty -- MS: we want to replace alphas if possible
 
 
@@ -383,12 +384,12 @@ ppKoat its = PP.vcat
   , PP.text "(RULES "
   , PP.indent 2 $ PP.vcat (pp `fmap` Its.rules (Its.irules_ its))
   , PP.text ")" ]
-  where 
-    pp (Its.Rule lhs rhss cs) = 
-      PP.pretty lhs 
-        <> PP.text " -> " 
-        <> PP.text "Com_" <> PP.int (length rhss) <> PP.tupled' rhss 
-        <> if null cs then PP.empty else PP.encloseSep PP.lbracket PP.rbracket (PP.text " && ") (PP.pretty `fmap` cs)
+  where
+    pp (Its.Rule lhs rhss cs) =
+      PP.pretty lhs
+        <> PP.text " -> "
+        <> PP.text "Com_" <> PP.int (length rhss) <> PP.tupled' rhss
+        <> if null cs then PP.empty else PP.encloseSep PP.lbracket PP.rbracket (PP.text " /\\ ") (PP.pretty `fmap` cs)
 
 
 renameRules :: Rules f String -> Rules f String
