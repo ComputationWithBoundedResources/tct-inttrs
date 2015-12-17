@@ -19,7 +19,7 @@ Executables:
   * [minismt, version 0.6](http://cl-informatik.uibk.ac.at/software/minismt/) or [z3, version 4.3](https://github.com/Z3Prover/z3)
   * [yices, version 2.3](http://yices.csl.sri.com/)
 
-Other packages
+Other packages:
   * [slogic](https://github.com/ComputationWithBoundedResources/slogic/)
   * [tct-core](https://github.com/ComputationWithBoundedResources/tct-core/)
   * [tct-common](https://github.com/ComputationWithBoundedResources/tct-common/)
@@ -36,5 +36,27 @@ To build and install the package run following command:
 
 ```bash
 stack install tct-inttrs
+```
+
+###Example Usage
+
+To transform a problem into TRS or ITS format use following commands respectively:
+```bash
+#output TRS in WST format
+tct-inttrs --putTrs $problem
+#output ITS in Koat format
+tct-inttrs --putIts $problem
+```
+
+To directly invoke the resource analysis on the transformed problems use one of the following commands:
+```bash
+# executes the default strategies on resulting TRS and ITS problem, returning the first successfull result
+tct-inttrs $problem
+# executes default trs strategy on resulting TRS problem
+tct-inttrs --strategy trs $problem
+# executes defualt its strategy on resulting ITS problem
+tct-inttrs --strategy its $problem 
+# executes 'polys' strategy on resulting TRS problem
+tct-inttrs --strategy "trs :trs polys"
 ```
 
