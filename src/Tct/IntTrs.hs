@@ -5,7 +5,7 @@ See <http://aprove.informatik.rwth-aachen.de/help_new/inttrs.html> for details.
 
 Example:
 @
-  outer(x, r)       -> inner(1, 1, x, r)       [ x >= 0 && r <= 100000]
+  outer(x, r)       -> inner(1, 1, x, r)       [ x >= 0 && r <= 100000 ]
   inner(f, i, x, r) -> inner(f + i, i+1, x, r) [ i <= x ]
   inner(f, i, x, r) -> outer(x - 1, r + f)     [ i > x ]
   g(cons(x, xs), y) -> g(xs, y + 1)
@@ -17,10 +17,19 @@ Remarks:
   * no variable section in contrast to TRS (WST) format; non-arithmetic constants require parenthesis, ie, @c()@
 
 Assumption:
-  * no negation, numbers are parsed as naturals (machine-dependent @Int@)
-  * system is well-typed wrt. to @Univ@ and @Nat@ type
-  * arithmetic expressions not on top position
-  * there is a unique start location, ie., exists ONE rule with unique function symbol on lhs
+  * system is well-typed wrt. to @Univ@ and @Int@ type
+  * arithmetic are expressions not on root positions
+  * for the translation to ITS there is a unique start location, ie., exists ONE rule with unique function symbol on lhs
+
+Changelog:
+  29.12.2014
+  * identifier can have dots
+  * ppKoat: FUNCTIONSYMBOLS instead of FUNCTIONSYMBOL
+  * for the ITS translation introduce an extra rule if the original one consists of a single rule; koat and tct-its do not allow start rules to have incoming edges
+  * parse and ignore TRUE in constraints
+  * parse && as well as /\ in constraints
+  * parse integer numbers 
+
 -}
 module Tct.IntTrs
   (
@@ -41,7 +50,7 @@ import           Control.Applicative          ((<|>))
 import           Control.Monad.Except
 import           Control.Monad.RWS.Strict
 import qualified Data.Map.Strict              as M
-import           Data.Maybe                   (fromJust, fromMaybe)
+import           Data.Maybe                   (fromJust, fromMaybe, catMaybes)
 import qualified Data.Set                     as S
 import           System.IO                    (hPutStrLn, stderr)
 
@@ -75,6 +84,7 @@ import qualified Tct.Trs                      as Trs (runtime)
 import qualified Tct.Trs.Data.Problem         as Trs (fromRewriting)
 
 
+-- TODO: MS: rename Nat
 data IFun           = Add | Mul | Sub | Nat Int               deriving (Eq, Ord, Show)
 type ITerm f v      = T.Term IFun v
 data CFun           = Lte | Lt | Eq | Gt | Gte                 deriving (Eq, Ord, Show, Enum, Bounded)
@@ -143,7 +153,7 @@ tok = PT.makeTokenParser
     , PT.commentEnd      = "*)"
     , PT.nestedComments  = False
     , PT.identStart      = PS.letter
-    , PT.identLetter     = PS.alphaNum <|> PS.oneOf "_'"
+    , PT.identLetter     = PS.alphaNum <|> PS.oneOf "_'."
     , PT.reservedOpNames = cRep `fmap` [(minBound :: CFun)..]
     , PT.reservedNames   = []
     , PT.caseSensitive   = True }
@@ -161,8 +171,8 @@ pParens = PT.parens tok
 pReservedOp :: String -> Parser ()
 pReservedOp = PT.reservedOp tok
 
-pNat :: Parser Int
-pNat = fromIntegral <$> PT.natural tok
+pInt :: Parser Int
+pInt = fromIntegral <$> PT.integer tok
 
 type Parser = PS.Parsec String ()
 -- type Parser = PS.ParsecT Text () Identity
@@ -176,7 +186,7 @@ pTerm =
   <|> T.map IFun id <$> pITerm
 
 pITerm :: Parser (ITerm String String)
-pITerm = PE.buildExpressionParser table (pParens pITerm <|> (int <$> pNat) <|> pVar)
+pITerm = PE.buildExpressionParser table (pParens pITerm <|> (int <$> pInt) <|> pVar)
   where
     table =
       -- [ [ unary "-" neg ]
@@ -189,12 +199,16 @@ pCFun :: Parser CFun
 pCFun = PS.choice $ k  `fmap` [(minBound :: CFun)..]
   where k c = PS.try (pReservedOp $ cRep c) *> return c
 
-pConstraint :: Parser (Constraint String String)
-pConstraint = Constraint <$> pITerm <*> pCFun <*> pITerm
+pConstraint :: Parser (Maybe (Constraint String String))
+pConstraint =
+  (PS.try (pSymbol "TRUE") *> return Nothing)
+  <|> (Just <$> (Constraint <$> pITerm <*> pCFun <*> pITerm))
 
 pConstraints :: Parser [Constraint String String]
-pConstraints = PS.option [] (brackets $ pConstraint `PS.sepBy1` pSymbol "&&")
-  where brackets p = pSymbol "[" *> p <* pSymbol "]"
+pConstraints = catMaybes <$> PS.option [] (brackets $ pConstraint `PS.sepBy1` pAnd)
+  where
+    brackets p = pSymbol "[" *> p <* pSymbol "]"
+    pAnd       = pSymbol "&&" <|> pSymbol "/\\"
 
 pRule :: Parser (Rule String String)
 pRule = Rule <$> k <*> pConstraints
@@ -360,9 +374,10 @@ filterUniv tys = traverse (filterRule . rule)
 -- f(aexp1,...,aexp2) -> g(aexp1,...,aexp2)
 toIts' :: ErrorM m => Typing String -> Rules String String -> m Its
 toIts' tys rs = do
-  l0 <- findStart rs
-  rs' <- filterNum tys rs
-  asItsRules l0 . padRules . renameRules $ filter (not . rhsIsVar) rs'
+  let (tys1, rs1) = addStartRule (tys,rs)
+  l0 <- findStart rs1
+  rs2 <- filterNum tys1 rs1
+  asItsRules l0 . padRules . renameRules $ filter (not . rhsIsVar) rs2
   where
     rhsIsVar = T.isVar . R.rhs . rule
 
@@ -379,7 +394,7 @@ putIts rs = case infer rs >>= flip toIts' rs of
 ppKoat :: Its -> Doc
 ppKoat its = PP.vcat
   [ PP.text "(GOAL COMPLEXITY)"
-  , PP.text "(STARTTERM (FUNCTIONSYMBOL "<> PP.text (Its.fun $ Its.startterm_ its) <> PP.text "))"
+  , PP.text "(STARTTERM (FUNCTIONSYMBOLS "<> PP.text (Its.fun $ Its.startterm_ its) <> PP.text "))"
   , PP.text "(VAR " <> PP.hsep (PP.text `fmap` Its.domain its) <> PP.text ")"
   , PP.text "(RULES "
   , PP.indent 2 $ PP.vcat (pp `fmap` Its.rules (Its.irules_ its))
@@ -446,6 +461,16 @@ toItsConstraint (Constraint t1 cop t2) = case cop of
   Eq  -> Its.Eq  <$> itermToPoly t1 <*> itermToPoly t2
   Gt  -> Its.Gte <$> itermToPoly t1 <*> (R.add R.one <$> itermToPoly t2)
   Gte -> Its.Gte <$> itermToPoly t1 <*> itermToPoly t2
+
+-- MS: just another hack to deduce the starting location
+-- | If the system constists only of a single rule; introduce an extra rule with a unique start location.
+addStartRule :: (Ord f, Monoid f) => (Typing f, Rules f v) -> (Typing f, Rules f v)
+addStartRule (ty,rs@[Rule (R.Rule (T.Fun (UFun f) ts) (T.Fun (UFun g) _)) _]) = (M.insert lfun ldec ty, Rule r []:rs)
+  where 
+    ldec = TypeDecl [] Univ
+    lfun = UFun (f <> g)
+    r    = R.Rule (T.Fun lfun []) (T.Fun (UFun f) ts)
+addStartRule rs                           = rs
 
 -- | Look for a single unique function symbol on the rhs.
 findStart :: (ErrorM m, Ord f) => Rules f v -> m f
