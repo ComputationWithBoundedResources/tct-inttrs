@@ -22,13 +22,15 @@ Assumption:
   * for the translation to ITS there is a unique start location, ie., exists ONE rule with unique function symbol on lhs
 
 Changelog:
+  0.2.1.0
+    *  add wellformed-ness predicate and processor
   0.2.0.0 - successfully parses all examples of the TPDB
-  * identifier can contain `.`, `$` and `-
-  * ppKoat: FUNCTIONSYMBOLS instead of FUNCTIONSYMBOL
-  * for the ITS translation introduce an extra rule if the original one consists of a single rule; koat and tct-its do not allow start rules to have incoming edges
-  * parse and ignore TRUE in constraints
-  * parse && as well as /\ in constraints
-  * parse integer numbers 
+    * identifier can contain `.`, `$` and `-
+    * ppKoat: FUNCTIONSYMBOLS instead of FUNCTIONSYMBOL
+    * for the ITS translation introduce an extra rule if the original one consists of a single rule; koat and tct-its do not allow start rules to have incoming edges
+    * parse and ignore TRUE in constraints
+    * parse && as well as /\ in constraints
+    * parse integer numbers
 
 -}
 module Tct.IntTrs
@@ -40,9 +42,10 @@ module Tct.IntTrs
   , putTrs, putIts
   -- * Tct Integration
   , IntTrs, IntTrsConfig
+  , isWellFormed
   , rules
   , runIntTrs, intTrsConfig
-  , toTrs, toIts, withTrs, withIts, withBoth, intTrsDeclarations
+  , toTrs, toIts, withTrs, withIts, withBoth, wellformed, intTrsDeclarations
   ) where
 
 
@@ -116,6 +119,33 @@ termToITerm (T.Fun (IFun f) ts) = T.Fun f <$> traverse termToITerm ts
 termToITerm (T.Var v)           = pure (T.Var v)
 
 type Rules f v = [Rule f v]
+
+-- | Checks wether the system is wellformed.
+-- A system is well-formed if for all rules following properties is fullfilled.
+--
+--   * no variables at root position
+--   * no arithmetic expression at root position
+--   * no univ function symbols below arithmetic expressions
+--
+-- This properties are sometimes used during translation; but actually never checked.
+isWellFormed' :: (ErrorM m, Show f, Show v) => Rules f v -> m (Rules f v)
+isWellFormed' rs = all' isWellFormedRule rs *> pure rs
+  where
+    isWellFormedRule (Rule (R.Rule lhs rhs) _)    = isWellFormedRoot lhs *> isWellFormedRoot rhs
+    isWellFormedRoot (T.Fun (UFun _) ts)          = all' isWellFormedTerm ts
+    isWellFormedRoot t@(T.Fun (IFun _) _)         = throwError $ "iterm at root position: " ++ show t
+    isWellFormedRoot t@(T.Var _)                  = throwError $ "var at root position: " ++ show t
+    isWellFormedTerm (T.Fun (UFun _) ts)          = all' isWellFormedTerm ts
+    isWellFormedTerm t@(T.Fun (IFun _) _)         = isWellFormedITerm t
+    isWellFormedTerm (T.Var _ )                   = pure True
+    isWellFormedITerm t@(T.Fun (UFun _) _)        = throwError $ "uterm at iterm position" ++ show t
+    isWellFormedITerm (T.Fun (IFun Add) ts@[_,_]) = all' isWellFormedITerm ts
+    isWellFormedITerm (T.Fun (IFun Mul) ts@[_,_]) = all' isWellFormedITerm ts
+    isWellFormedITerm (T.Fun (IFun Sub) ts@[_,_]) = all' isWellFormedITerm ts
+    isWellFormedITerm (T.Fun (IFun (Nat _)) [])   = pure True
+    isWellFormedITerm t@(T.Fun (IFun _) _)        = throwError $ "iterm with wrong arity" ++ show t
+    isWellFormedITerm (T.Var _)                   = pure True
+    all' f as = and <$> traverse f as
 
 iop :: f -> T.Term f v -> T.Term f v -> T.Term f v
 iop f x y = T.Fun f [x,y]
@@ -276,8 +306,8 @@ a =~ b = tell [(a,b)]
 -- MS: (almost) standard type inference
 -- we already know the type output type of function symbols, and the type of variables in arithmetic expressions
 -- still we have to type the rest of the variables
-infer :: (Show v, Show f, Ord f, Ord v) => Rules f v -> Either String (Typing f)
-infer rs = do
+infer :: (ErrorM m, Show v, Show f, Ord f, Ord v) => Rules f v -> m (Typing f)
+infer rs = either throwError pure $ do
   (decs,_,up) <- runExcept $ runRWST (runInferM inferM) (Environment M.empty M.empty) 0
   subst       <- unify up
   return $ instDecl subst `fmap` decs
@@ -466,7 +496,7 @@ toItsConstraint (Constraint t1 cop t2) = case cop of
 -- | If the system constists only of a single rule; introduce an extra rule with a unique start location.
 addStartRule :: (Ord f, Monoid f) => (Typing f, Rules f v) -> (Typing f, Rules f v)
 addStartRule (ty,rs@[Rule (R.Rule (T.Fun (UFun f) ts) (T.Fun (UFun g) _)) _]) = (M.insert lfun ldec ty, Rule r []:rs)
-  where 
+  where
     ldec = TypeDecl [] Univ
     lfun = UFun (f <> g)
     r    = R.Rule (T.Fun lfun []) (T.Fun (UFun f) ts)
@@ -564,11 +594,20 @@ parse s = case PS.parse pRules "" s of
 parseIO :: FilePath -> IO (Either String IntTrs)
 parseIO fn = parse <$> readFile fn
 
+isWellFormed :: (ErrorM m, Ord f, Ord v, Show f, Show v) => Rules f v -> m (Rules f v)
+isWellFormed rs = isWellFormed' rs *> infer rs *> pure rs
+
 intTrsConfig :: IntTrsConfig
 intTrsConfig = defaultTctConfig parseIO
 
 runIntTrs :: Declared IntTrs IntTrs => IntTrsConfig -> IO ()
 runIntTrs = runTct
+
+-- | Checks wether the problem 'isWellFormed'.
+wellformed :: Strategy IntTrs IntTrs
+wellformed = withProblem $ \p -> case isWellFormed (rules p) of
+  Left err -> failing err
+  Right _  -> identity
 
 toTrs :: Strategy IntTrs Trs
 toTrs = transform "We extract a TRS fragment from the current int-TRS problem:"
@@ -608,5 +647,8 @@ intTrsDeclarations =
       (\st -> withIts st .>>> close)
   , T.SD $ T.declare "withBoth" ["Solve with TRS and ITS."]
       (trsArg `optional` Trs.runtime, itsArg `optional` Its.runtime)
-      (\st1 st2 -> withBoth st1 st2 .>>> close) ]
+      (\st1 st2 -> withBoth st1 st2 .>>> close)
+  , T.SD $ T.declare "wellformed" ["checks wether the system is wellformed"]
+      ()
+      wellformed ]
 
