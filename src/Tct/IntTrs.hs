@@ -22,8 +22,8 @@ Assumption:
   * for the translation to ITS there is a unique start location, ie., exists ONE rule with unique function symbol on lhs
 
 Changelog:
-  29.12.2014
-  * identifier can have dots
+  0.2.0.0 - successfully parses all examples of the TPDB
+  * identifier can contain `.` and `$`
   * ppKoat: FUNCTIONSYMBOLS instead of FUNCTIONSYMBOL
   * for the ITS translation introduce an extra rule if the original one consists of a single rule; koat and tct-its do not allow start rules to have incoming edges
   * parse and ignore TRUE in constraints
@@ -153,7 +153,7 @@ tok = PT.makeTokenParser
     , PT.commentEnd      = "*)"
     , PT.nestedComments  = False
     , PT.identStart      = PS.letter
-    , PT.identLetter     = PS.alphaNum <|> PS.oneOf "_'."
+    , PT.identLetter     = PS.alphaNum <|> PS.oneOf "_'.$"
     , PT.reservedOpNames = cRep `fmap` [(minBound :: CFun)..]
     , PT.reservedNames   = []
     , PT.caseSensitive   = True }
