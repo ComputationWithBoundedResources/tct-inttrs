@@ -598,7 +598,8 @@ isWellFormed :: (ErrorM m, Ord f, Ord v, Show f, Show v) => Rules f v -> m (Rule
 isWellFormed rs = isWellFormed' rs *> infer rs *> pure rs
 
 intTrsConfig :: IntTrsConfig
-intTrsConfig = defaultTctConfig parseIO
+intTrsConfig = (defaultTctConfig parseIO) 
+  { defaultStrategy = withBoth Trs.runtime Its.runtime }
 
 runIntTrs :: Declared IntTrs IntTrs => IntTrsConfig -> IO ()
 runIntTrs = runTct
@@ -624,7 +625,7 @@ toIts = transform "We extract a Its fragment from the current int-TRS problem:"
 withIts :: Strategy Its Its -> Strategy IntTrs Its
 withIts st = toIts .>>> st
 
-withBoth :: Strategy Trs Trs -> Strategy Its Its -> Strategy IntTrs ()
+withBoth :: Strategy Trs Trs -> Strategy Its Its -> Strategy IntTrs IntTrs
 withBoth st1 st2 = withProblem $ \p -> let tpM = infer (rules p) in fastest
   [ transform "a" (const $ tpM >>= \tp -> toTrs' tp (rules p)) .>>> st1 .>>> close
   , transform "a" (const $ tpM >>= \tp -> toIts' tp (rules p)) .>>> st2 .>>> close]
